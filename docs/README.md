@@ -1,206 +1,108 @@
-# Scalable Monte Carlo Derivatives Pricer
+# Monte Carlo Derivatives Pricer
 
-This project prices, differentiates, and hedges derivatives in a
-multidimensional Black-Scholes model. It is written as a small Python package
-(`mcpricer`) with command wrappers at the repository root and under
-`pypricer-skel`, so it can be used both as library code and as a terminal
-program for the benchmark cases.
+`mcpricer` is a small Python package and command-line tool for Monte Carlo
+pricing, finite-difference deltas, and discrete hedging experiments in a
+multi-asset Black-Scholes setting.
 
-The active implementation is the `mcpricer` package. The `pypricer-skel/src`
-folder is kept as a legacy/reference skeleton, while `mcpricer.py` and
-`pypricer-skel/mcpricer.py` are thin wrappers that call the active package.
+The repository is organized around the reusable implementation. External
+reference inputs, local data bundles, and PDFs are intentionally kept out of
+version control; pass those files by path when you run the tool locally.
 
-## What The Project Does
+## Capabilities
 
-For an input parameter file and, when hedging is requested, a market path file,
-the project can produce three kinds of result:
-
-- Price summary: Monte Carlo price and time-0 deltas with standard errors.
-- Portfolio path: the value, option price, and deltas of a discrete
-  self-financing hedging portfolio at each hedge date.
-- Hedge summary: final profit and loss, final payoff, and initial price
-  metadata for the same hedging run.
-
-The bundled benchmark cases are:
-
-| Case | Option | Dimension | Files |
-| --- | --- | ---: | --- |
-| `call` | one-asset European call | 1 | `call.json`, `call_market.txt` |
-| `asian` | arithmetic Asian basket option | 2 | `asian.json`, `asian_market.txt` |
-| `basket_2d` | two-asset terminal basket call | 2 | `basket_2d.json`, `basket_2d_market.txt` |
-| `basket_5d` | five-asset terminal basket call | 5 | `basket_5d.json`, `basket_5d_market.txt` |
-| `basket_5d_1` | second five-asset basket benchmark | 5 | `basket_5d_1.json`, `basket_5d_1_market.txt` |
-| `perf` | cumulative positive basket performance payoff | 5 | `perf.json`, `perf_market.txt` |
+- Price an option at time 0 and report Monte Carlo standard errors.
+- Estimate deltas with centered finite differences and common random numbers.
+- Reprice conditionally along an observed market path.
+- Simulate a discrete self-financing delta-hedging portfolio.
+- Write price, portfolio, and hedge summaries as JSON.
+- Support one-asset calls and puts, terminal basket options, arithmetic Asian
+  basket options, and cumulative positive performance payoffs.
 
 ## Project Layout
 
 ```text
-mcpricer.py                 Root command wrapper around mcpricer.cli.
+mcpricer.py                 Command wrapper around mcpricer.cli.
 pytest.ini                  Pytest configuration for local package imports.
 
 mcpricer/
-  cli.py                    Terminal command behavior.
+  cli.py                    Command-line behavior and output orchestration.
   config.py                 Builds model, option, and pricer objects from JSON.
   models/
     base.py                 Abstract stochastic model interface.
-    black_scholes.py        Multidimensional Black-Scholes simulator.
+    black_scholes.py        Multi-asset Black-Scholes simulator.
   options/
     base.py                 Abstract vectorized payoff interface.
-    basket.py               Basket, standard call, and standard put payoffs.
+    basket.py               Basket, call, and put payoffs.
     asian.py                Arithmetic Asian basket payoff.
-    performance.py          Performance payoff.
+    performance.py          Positive performance payoff.
     factory.py              Maps JSON option type names to option classes.
   engine/
     monte_carlo.py          Price and delta estimators.
     portfolio.py            Discrete self-financing hedging portfolio.
-    stats.py                Online Monte Carlo mean, standard error, and CI.
+    stats.py                Online Monte Carlo statistics.
   io/
     params.py               JSON parameter loading.
     market.py               Market path parsing.
     output.py               JSON output writing.
 
-pypricer-skel/
-  mcpricer.py               Compatibility wrapper around mcpricer.cli.
-  data/                     Benchmark parameter, market, and expected files.
-  src/                      Legacy skeleton/reference implementation.
-
 scripts/
-  generate_live_outputs.py  Regenerates live outputs for benchmark cases.
+  generate_live_outputs.py  Regenerates output JSON files from local inputs.
 
-outputs/                    Generated price, portfolio, and hedge JSON files.
-tests/                      Unit, CLI smoke, and reference-data tests.
+outputs/                    Generated JSON outputs from local runs.
+tests/                      Unit tests and optional private reference tests.
 docs/
-  code_architecture.png     Rendered architecture diagram.
-  render_code_architecture.py Regenerates code_architecture.png.
+  README.md                 This document.
 ```
 
-The architecture diagram is available at `docs/code_architecture.png`.
+## Model
 
-## Model And Numerical Method
-
-The implemented model is a risk-neutral multidimensional Black-Scholes model
-with constant coefficients:
+The current model is a risk-neutral multi-asset Black-Scholes model with
+constant coefficients:
 
 ```text
 dS_i(t) / S_i(t) = r dt + sigma_i dW_i(t)
 ```
 
-The Brownian motions are correlated. A scalar correlation in the JSON file is
-expanded into an equicorrelation matrix; a full square correlation matrix is
-also accepted. Simulated paths have shape:
+The Brownian motions may be correlated. The JSON configuration accepts either a
+scalar equicorrelation value or a full square correlation matrix. Simulated
+paths have shape:
 
 ```text
 (number_of_paths, number_of_times, dimension)
 ```
 
-For fixing dates `0 = t0 < ... < tN = T`, the Monte Carlo price at time `t` is:
-
-```text
-exp(-r * (T - t)) * E[payoff | F_t]
-```
-
-Deltas are centered finite differences. The implementation reuses the same
-future random multipliers for the plus and minus bumps, which reduces variance.
-When both price and deltas are needed, the pricer estimates them in one Monte
-Carlo pass so the base price and bumped payoffs share the same simulated future
-multipliers.
-
-Implementation choices worth pointing out in a presentation:
-
-- Paths are processed in chunks to keep memory stable for large samples.
-- Deltas use common random numbers for the centered bumps to reduce estimator
-  noise without changing the formula.
-- After a hedge date, observed fixings are read from the market path and only
-  future fixings are simulated.
-- Asian and performance hedge dates are batched when they share the same future
-  fixing grid, so one table of simulated future shocks can serve several
-  conditional price/delta estimates.
-- The portfolio update is done in discounted units, which is the compact form
-  of the discrete self-financing condition.
-
-The discounted hedging wealth is updated on hedge dates `tau_i` by:
-
-```text
-V_tilde[i+1] = V_tilde[i] + delta[i] . (S_tilde[i+1] - S_tilde[i])
-```
-
-where `S_tilde` and `V_tilde` are discounted by the risk-free rate.
-
-### Hedge-Date Batching
-
-The code uses two different forms of grouping:
-
-- `chunk size` controls memory use inside one Monte Carlo estimate. A large
-  sample is split into path chunks, accumulated by `OnlineMoments`, and the
-  estimator is unchanged.
-- Hedge-date batching groups several conditional repricings during a portfolio
-  run. This is an execution shortcut for path-dependent payoffs, not a change
-  to the pricing formula.
-
-The batching path is in `mcpricer/engine/portfolio.py`:
-
-1. `Portfolio.run()` checks `_uses_batched_fixing_intervals()`.
-2. Batching is enabled only for `asian` and `performance` options, because
-   their payoff depends on the full fixing path.
-3. `_batched_price_deltas()` scans the hedge dates before maturity and groups
-   consecutive dates with the same number of future fixing dates.
-4. For each group, it creates one reusable set of correlated normal chunks with
-   `MonteCarloPricer.correlated_normal_chunks(future_count)`.
-5. It calls `MonteCarloPricer.price_and_delta_batch(...)`, which prices every
-   hedge date in that group using the same future shock table.
-
-The model-side helper is
-`BlackScholesModel.future_multipliers_batch(...)`. It returns multipliers with
-shape `(number_of_hedge_dates, number_of_paths, number_of_future_fixings,
-dimension)`. Each hedge date has its own current time and current market spot,
-but the simulated normal increments are shared across the group. That keeps the
-Monte Carlo estimates easier to compare across nearby hedge dates and avoids
-regenerating the same future-shock table repeatedly.
-
-Basket, call, and put payoffs do not use this hedge-date batching path. They
-are cheaper terminal-payoff cases, so `Portfolio` calls the regular
-`price_and_delta()` path at each hedge date while still reusing common random
-numbers when the future grid size is unchanged.
-
-## Supported Payoffs
-
-The payoff input array always has trailing shape `(fixing_dates_number + 1,
-dimension)`.
-
-Let:
-
-```text
-B_i = sum_j coefficient_j * S_j(t_i)
-```
-
-| JSON `option type` | Payoff |
-| --- | --- |
-| `basket` | `max(B_N - strike, 0)` |
-| `call` | one-asset payoff `max(S_N - strike, 0)`; requires `option size = 1` |
-| `put` | one-asset payoff `max(strike - S_N, 0)`; requires `option size = 1` |
-| `asian` | `max(mean(B_0, ..., B_N) - strike, 0)` |
-| `performance` | `1 + sum_i max(B_i / B_{i-1} - 1, 0)` |
+The Monte Carlo engine processes paths in chunks, so large runs do not require
+holding every simulated path in memory at once. Price and delta estimation can
+share the same simulated future multipliers, which reduces estimator noise and
+keeps related estimates easier to compare.
 
 ## Input Files
 
-### Parameter JSON
+The command-line tool takes two kinds of local input:
 
-Benchmark parameter files live in `pypricer-skel/data/*.json`.
+- A parameter JSON file describing the model, payoff, Monte Carlo settings, and
+  hedge grid.
+- A market path text file when portfolio or hedge output is requested.
+
+Reference or private input folders should stay local. The `.gitignore` already
+excludes common local data folder names for this purpose.
+
+### Parameter JSON
 
 Required fields:
 
 | Field | Meaning |
 | --- | --- |
 | `model type` | Currently only `bs` is supported. |
-| `option size` | Number of assets, also called dimension `D`. |
+| `option size` | Number of assets. |
 | `spot` | Initial spot; scalar, one-element list, or length-`D` vector. |
-| `volatility` | Asset volatility; scalar, one-element list, or length-`D` vector. |
+| `volatility` | Volatility; scalar, one-element list, or length-`D` vector. |
 | `interest rate` | Constant risk-free rate. |
 | `correlation` | Scalar equicorrelation or a `D x D` correlation matrix. |
-| `maturity` | Option maturity `T`. |
+| `maturity` | Option maturity. |
 | `option type` | `basket`, `call`, `put`, `asian`, or `performance`. |
-| `payoff coefficients` | Basket weights; scalar, one-element list, or length-`D` vector. Not required for `call` or `put`, which use coefficient `1.0`. |
-| `fixing dates number` | Number of time intervals between `0` and maturity. |
+| `payoff coefficients` | Basket weights for basket-style payoffs. |
+| `fixing dates number` | Number of intervals between time 0 and maturity. |
 | `sample number` | Number of Monte Carlo paths. |
 | `hedging dates number` | Number of hedge intervals. |
 | `fd step` | Relative finite-difference bump used for deltas. |
@@ -209,40 +111,28 @@ Optional fields:
 
 | Field | Meaning |
 | --- | --- |
-| `strike` | Strike. Defaults to `0.0` if omitted. |
+| `strike` | Strike. Defaults to `0.0`. |
 | `seed` | Random seed for reproducible Monte Carlo runs. |
-| `chunk size` | Number of paths processed per vectorized chunk. Defaults to `min(25000, sample number)` for basket/call/put and `min(5000, sample number)` for Asian/performance payoffs. |
-| `trend` | Present in benchmark files for compatibility; the risk-neutral pricer does not use it. |
+| `chunk size` | Number of paths processed per vectorized chunk. |
 
-### Market Path Files
+For one-asset `call` and `put` options, the implementation uses a unit payoff
+coefficient internally.
 
-Benchmark market files live in `pypricer-skel/data/*_market.txt`.
+### Market Path Text
 
 Market files may be whitespace, comma, or semicolon separated. Lines beginning
-with `#` are ignored. The first column may be a date/index column; otherwise the
-file should contain exactly `D` price columns. For hedging, the file must contain
-`hedging dates number + 1` rows of positive finite prices.
+with `#` are ignored. The first column may be a date or index column; otherwise
+the file should contain exactly `D` price columns.
+
+For hedging, the market file must contain `hedging dates number + 1` rows of
+positive finite prices.
 
 ## Output Files
 
-Price summary output is a JSON object:
+Price output is a JSON object with the price, deltas, standard errors, sample
+standard deviations, confidence-interval half widths, and runtime.
 
-```json
-{
-    "time": 0.0,
-    "delta": [],
-    "deltaStdDev": [],
-    "deltaSampleStdDev": [],
-    "deltaCi95HalfWidth": [],
-    "price": 0.0,
-    "priceStdDev": 0.0,
-    "priceSampleStdDev": 0.0,
-    "priceCi95HalfWidth": 0.0
-}
-```
-
-Portfolio output is a JSON array with one record per hedge date before
-maturity:
+Portfolio output is a JSON array with one record per hedge date before maturity:
 
 ```json
 {
@@ -255,7 +145,7 @@ maturity:
 }
 ```
 
-Hedge output is a JSON object:
+Hedge output is a compact JSON object:
 
 ```json
 {
@@ -267,25 +157,7 @@ Hedge output is a JSON object:
 }
 ```
 
-## Comparing Outputs
-
-The `time` fields are runtime diagnostics, not correctness targets. They depend
-on hardware, Python/NumPy versions, and how much work the command performs. In
-particular, portfolio and hedge commands are expensive because they rerun Monte
-Carlo price and delta estimation at every hedge date.
-
-The `priceStdDev` and `deltasStdDev` fields are standard errors of the Monte
-Carlo estimators. When comparing a live output with an expected output, both
-numbers are noisy independent estimates. Compare prices with the combined
-standard error:
-
-```text
-combinedStdErr = sqrt(actualPriceStdDev^2 + expectedPriceStdDev^2)
-z = abs(actualPrice - expectedPrice) / combinedStdErr
-```
-
-For a 95% informal check, `z` should usually be below about `1.96`. The tests
-use a wider tolerance to avoid random Monte Carlo failures.
+Runtime fields are diagnostics, not correctness targets.
 
 ## Setup
 
@@ -303,166 +175,72 @@ directly.
 
 ## Command Reference
 
-All commands in this section are intended to be run from the repository root:
+Run commands from the repository root:
 
 ```powershell
 cd C:\Users\aless\my_project\derivatives
 ```
 
-The primary command wrapper in this checkout is:
+The command wrapper is:
 
 ```powershell
 python .\mcpricer.py
 ```
 
-The compatibility wrapper below accepts the same arguments and calls the same
-implementation:
-
-```powershell
-python .\pypricer-skel\mcpricer.py
-```
-
-### Command Forms
+Command forms:
 
 | Form | What it does |
 | --- | --- |
-| `python .\mcpricer.py PARAMS_JSON` | Prints the price and time-0 deltas to the terminal. |
-| `python .\mcpricer.py PARAMS_JSON OUTFILE_JSON` | Writes the same price summary to a JSON file. |
-| `python .\mcpricer.py MARKET_TXT PARAMS_JSON OUTFILE_JSON` | Writes the discrete hedging portfolio path. |
+| `python .\mcpricer.py PARAMS_JSON` | Prints the price and time-0 deltas. |
+| `python .\mcpricer.py PARAMS_JSON OUTFILE_JSON` | Writes the same price summary to JSON. |
+| `python .\mcpricer.py MARKET_TXT PARAMS_JSON OUTFILE_JSON` | Writes the hedging portfolio path. |
 | `python .\mcpricer.py --hedge MARKET_TXT PARAMS_JSON OUTFILE_JSON` | Writes only the final hedge summary. |
-| `python .\mcpricer.py --all MARKET_TXT PARAMS_JSON OUTPUT_PREFIX` | Writes price, portfolio, and hedge files together. |
+| `python .\mcpricer.py --all MARKET_TXT PARAMS_JSON OUTPUT_PREFIX` | Writes price, portfolio, and hedge outputs together. |
 
-Argument meanings:
-
-- `PARAMS_JSON`: option, model, Monte Carlo, and hedging parameters.
-- `MARKET_TXT`: observed market path used for portfolio and hedge runs.
-- `OUTFILE_JSON`: exact JSON file to create.
-- `OUTPUT_PREFIX`: base path used by `--all`; suffixes are added automatically.
-
-For example, this command:
+Example commands using local input paths:
 
 ```powershell
-python .\mcpricer.py --all pypricer-skel\data\call_market.txt pypricer-skel\data\call.json outputs\call
+python .\mcpricer.py local-data\case.json
+python .\mcpricer.py local-data\case.json outputs\case_price_output.json
+python .\mcpricer.py local-data\case_market.txt local-data\case.json outputs\case_portfolio_output.json
+python .\mcpricer.py --hedge local-data\case_market.txt local-data\case.json outputs\case_hedge_output.json
+python .\mcpricer.py --all local-data\case_market.txt local-data\case.json outputs\case
 ```
 
-creates:
+The `--all` form creates files with these suffixes:
 
 ```text
-outputs\call_price_output.json
-outputs\call_portfolio_output.json
-outputs\call_hedge_output.json
+*_price_output.json
+*_portfolio_output.json
+*_hedge_output.json
 ```
 
-### Price Summary Commands
+## Regenerating Outputs
 
-Print price summaries to the terminal:
-
-```powershell
-python .\mcpricer.py pypricer-skel\data\call.json
-python .\mcpricer.py pypricer-skel\data\asian.json
-python .\mcpricer.py pypricer-skel\data\basket_2d.json
-python .\mcpricer.py pypricer-skel\data\basket_5d.json
-python .\mcpricer.py pypricer-skel\data\basket_5d_1.json
-python .\mcpricer.py pypricer-skel\data\perf.json
-```
-
-Write price summaries to `outputs/`:
+Use the helper script when a local data directory contains parameter JSON files
+with matching `*_market.txt` files:
 
 ```powershell
-python .\mcpricer.py pypricer-skel\data\call.json outputs\call_price_output.json
-python .\mcpricer.py pypricer-skel\data\asian.json outputs\asian_price_output.json
-python .\mcpricer.py pypricer-skel\data\basket_2d.json outputs\basket_2d_price_output.json
-python .\mcpricer.py pypricer-skel\data\basket_5d.json outputs\basket_5d_price_output.json
-python .\mcpricer.py pypricer-skel\data\basket_5d_1.json outputs\basket_5d_1_price_output.json
-python .\mcpricer.py pypricer-skel\data\perf.json outputs\perf_price_output.json
-```
-
-### Portfolio Commands
-
-Write hedging portfolio paths to `outputs/`:
-
-```powershell
-python .\mcpricer.py pypricer-skel\data\call_market.txt pypricer-skel\data\call.json outputs\call_portfolio_output.json
-python .\mcpricer.py pypricer-skel\data\asian_market.txt pypricer-skel\data\asian.json outputs\asian_portfolio_output.json
-python .\mcpricer.py pypricer-skel\data\basket_2d_market.txt pypricer-skel\data\basket_2d.json outputs\basket_2d_portfolio_output.json
-python .\mcpricer.py pypricer-skel\data\basket_5d_market.txt pypricer-skel\data\basket_5d.json outputs\basket_5d_portfolio_output.json
-python .\mcpricer.py pypricer-skel\data\basket_5d_1_market.txt pypricer-skel\data\basket_5d_1.json outputs\basket_5d_1_portfolio_output.json
-python .\mcpricer.py pypricer-skel\data\perf_market.txt pypricer-skel\data\perf.json outputs\perf_portfolio_output.json
-```
-
-### Hedge Metadata Commands
-
-Write hedge summaries to `outputs/`:
-
-```powershell
-python .\mcpricer.py --hedge pypricer-skel\data\call_market.txt pypricer-skel\data\call.json outputs\call_hedge_output.json
-python .\mcpricer.py --hedge pypricer-skel\data\asian_market.txt pypricer-skel\data\asian.json outputs\asian_hedge_output.json
-python .\mcpricer.py --hedge pypricer-skel\data\basket_2d_market.txt pypricer-skel\data\basket_2d.json outputs\basket_2d_hedge_output.json
-python .\mcpricer.py --hedge pypricer-skel\data\basket_5d_market.txt pypricer-skel\data\basket_5d.json outputs\basket_5d_hedge_output.json
-python .\mcpricer.py --hedge pypricer-skel\data\basket_5d_1_market.txt pypricer-skel\data\basket_5d_1.json outputs\basket_5d_1_hedge_output.json
-python .\mcpricer.py --hedge pypricer-skel\data\perf_market.txt pypricer-skel\data\perf.json outputs\perf_hedge_output.json
-```
-
-### All Outputs For One Case
-
-Write price, portfolio, and hedge outputs for each benchmark:
-
-```powershell
-python .\mcpricer.py --all pypricer-skel\data\call_market.txt pypricer-skel\data\call.json outputs\call
-python .\mcpricer.py --all pypricer-skel\data\asian_market.txt pypricer-skel\data\asian.json outputs\asian
-python .\mcpricer.py --all pypricer-skel\data\basket_2d_market.txt pypricer-skel\data\basket_2d.json outputs\basket_2d
-python .\mcpricer.py --all pypricer-skel\data\basket_5d_market.txt pypricer-skel\data\basket_5d.json outputs\basket_5d
-python .\mcpricer.py --all pypricer-skel\data\basket_5d_1_market.txt pypricer-skel\data\basket_5d_1.json outputs\basket_5d_1
-python .\mcpricer.py --all pypricer-skel\data\perf_market.txt pypricer-skel\data\perf.json outputs\perf
-```
-
-### Regenerate Benchmark Outputs
-
-Regenerate all benchmark output files in `outputs/`:
-
-```powershell
-python scripts\generate_live_outputs.py
+python scripts\generate_live_outputs.py --data-dir local-data --output-dir outputs
 ```
 
 Regenerate selected cases only:
 
 ```powershell
-python scripts\generate_live_outputs.py call asian
-python scripts\generate_live_outputs.py basket_2d basket_5d basket_5d_1 perf
-```
-
-Use custom input and output directories:
-
-```powershell
-python scripts\generate_live_outputs.py --data-dir pypricer-skel\data --output-dir outputs call
+python scripts\generate_live_outputs.py --data-dir local-data case_a case_b
 ```
 
 Full portfolio and hedge generation can be slow because Monte Carlo price and
 delta estimation are repeated at every hedge date.
 
-### Tests
-
-Run the full test suite:
-
-```powershell
-pytest
-```
-
-Run a specific test file:
-
-```powershell
-pytest tests\test_mcpricer.py
-pytest tests\test_reference_data.py
-```
-
 ## Python API
 
-You can also import the package directly:
+The package can be imported directly:
 
 ```python
 from mcpricer import load_pricing_setup
 
-setup = load_pricing_setup("pypricer-skel/data/call.json")
+setup = load_pricing_setup("local-data/case.json")
 price = setup.pricer.price()
 delta = setup.pricer.delta(0.0, setup.model.spot)
 
@@ -474,29 +252,46 @@ For a portfolio run, use `mcpricer.cli.hedge_records` or construct
 `mcpricer.engine.portfolio.Portfolio` with a model, option, pricer, market
 times, and market path.
 
+## Numerical Notes
+
+- Chunking controls memory use without changing the Monte Carlo estimator.
+- Deltas use centered finite differences.
+- Common random numbers are reused between base and bumped paths when possible.
+- Conditional repricing respects already-observed market fixings.
+- Path-dependent payoff repricing can batch hedge dates with the same future
+  fixing grid.
+- Portfolio wealth is updated in discounted units using the discrete
+  self-financing condition.
+
+## Tests
+
+Run the public test suite:
+
+```powershell
+pytest
+```
+
+Private reference-data tests are skipped unless you explicitly point them at a
+local reference-data directory:
+
+```powershell
+$env:MCPRICER_REFERENCE_DATA_DIR = "C:\path\to\reference-data"
+pytest tests\test_reference_data.py
+```
+
 ## Extending The Project
 
-To add a new payoff:
+To add a payoff:
 
 1. Create a new `BaseOption` subclass in `mcpricer/options/`.
 2. Implement `payoff(self, paths)` using vectorized NumPy operations.
 3. Add the class to `_OPTIONS` in `mcpricer/options/factory.py`.
 4. Add or update tests and a JSON parameter file using the new `option type`.
 
-To add a new stochastic model:
+To add a stochastic model:
 
 1. Create a `BaseModel` subclass in `mcpricer/models/`.
-2. Implement `simulate_paths`, `simulate_conditional`, `future_multipliers`,
-   and `validate`.
+2. Implement path simulation, conditional simulation, future multipliers, and
+   validation.
 3. Update `mcpricer/config.py` so JSON parameters can build the new model.
 4. Add tests for path shapes, parameter validation, and pricing behavior.
-
-## Notes
-
-- The active CLI is exposed through `mcpricer.py`; the compatibility wrapper in
-  `pypricer-skel/mcpricer.py` calls the same code.
-- Monte Carlo estimates can change between runs unless a `seed` is provided in
-  the parameter JSON.
-- The tests compare live Monte Carlo outputs to benchmark reference data using
-  tolerances based on the reported standard errors.
-  

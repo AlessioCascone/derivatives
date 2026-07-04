@@ -1,27 +1,47 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from mcpricer.config import build_pricing_setup
 from mcpricer.cli import price_summary
+from mcpricer.config import build_pricing_setup
 from mcpricer.engine.portfolio import Portfolio
 from mcpricer.engine.stats import DeltaResult, MCResult
 from mcpricer.io.market import load_market
 
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "pypricer-skel" / "data"
-PRICE_CASES = [
-    "asian",
-    "basket_2d",
-    "basket_5d",
-    "basket_5d_1",
-    "call",
-    "perf",
-]
+DATA_DIR_ENV = "MCPRICER_REFERENCE_DATA_DIR"
+DATA_DIR_VALUE = os.environ.get(DATA_DIR_ENV)
+if not DATA_DIR_VALUE:
+    pytest.skip(
+        f"set {DATA_DIR_ENV} to run private reference-data regression tests",
+        allow_module_level=True,
+    )
+
+DATA_DIR = Path(DATA_DIR_VALUE)
+if not DATA_DIR.exists():
+    pytest.skip(
+        f"{DATA_DIR_ENV} points to a missing directory: {DATA_DIR}",
+        allow_module_level=True,
+    )
+
+PRICE_CASES = sorted(
+    params_path.stem
+    for params_path in DATA_DIR.glob("*.json")
+    if (DATA_DIR / f"{params_path.stem}_market.txt").exists()
+    and (DATA_DIR / f"{params_path.stem}_expected_price.json").exists()
+    and (DATA_DIR / f"{params_path.stem}_expected_portfolio.json").exists()
+    and (DATA_DIR / f"{params_path.stem}_expected_hedge.json").exists()
+)
+if not PRICE_CASES:
+    pytest.skip(
+        f"no complete reference-data cases found in {DATA_DIR}",
+        allow_module_level=True,
+    )
 
 
 class ReplayPricer:
@@ -266,9 +286,8 @@ def test_hedge_metadata_matches_reference_data(case_name: str) -> None:
     )
 
 
-def test_main_package_does_not_import_skeleton_code() -> None:
+def test_main_package_does_not_depend_on_reference_data() -> None:
     package_dir = Path(__file__).resolve().parents[1] / "mcpricer"
     source = "\n".join(path.read_text(encoding="utf-8") for path in package_dir.rglob("*.py"))
 
-    assert "pypricer-skel" not in source
-    assert "pypricer_skel" not in source
+    assert DATA_DIR_ENV not in source

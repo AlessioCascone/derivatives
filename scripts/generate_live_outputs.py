@@ -11,14 +11,12 @@ if str(ROOT) not in sys.path:
 from mcpricer.cli import write_all_outputs
 
 
-BENCHMARK_CASES = (
-    "asian",
-    "basket_2d",
-    "basket_5d",
-    "basket_5d_1",
-    "call",
-    "perf",
-)
+def discover_cases(data_dir: Path) -> list[str]:
+    return sorted(
+        params_path.stem
+        for params_path in data_dir.glob("*.json")
+        if (data_dir / f"{params_path.stem}_market.txt").exists()
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,8 +26,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("pypricer-skel") / "data",
-        help="Directory containing benchmark params and market files.",
+        default=Path("local-data"),
+        help="Directory containing params JSON files and matching market files.",
     )
     parser.add_argument(
         "--output-dir",
@@ -40,13 +38,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "cases",
         nargs="*",
-        default=list(BENCHMARK_CASES),
-        help="Case names to generate. Defaults to all benchmark cases.",
+        help=(
+            "Case names to generate. Defaults to every JSON file in --data-dir "
+            "with a matching *_market.txt file."
+        ),
     )
     args = parser.parse_args(argv)
 
+    cases = args.cases or discover_cases(args.data_dir)
+    if not cases:
+        parser.error(
+            f"no cases found in {args.data_dir}; pass case names or choose another --data-dir"
+        )
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    for case_name in args.cases:
+    for case_name in cases:
         paths = write_all_outputs(
             market_path=args.data_dir / f"{case_name}_market.txt",
             params_path=args.data_dir / f"{case_name}.json",

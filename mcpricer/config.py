@@ -45,7 +45,7 @@ def build_pricing_setup(params: dict[str, Any]) -> PricingSetup:
     correlation = _parse_correlation(params["correlation"])
     strike = float(params.get("strike", 0.0))
     option_type = str(params["option type"])
-    # Plain calls and puts are one-asset benchmarks, so the JSON coefficient
+    # Plain calls and puts are one-asset instruments, so the JSON coefficient
     # field is intentionally ignored for those two aliases.
     if option_type.lower() in {"call", "put"}:
         coefficients = np.ones(1, dtype=float)

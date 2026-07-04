@@ -64,7 +64,7 @@ def write_all_outputs(
     params_path: str | Path,
     output_prefix: str | Path,
 ) -> dict[str, str]:
-    """Generate the three benchmark output files from one common setup."""
+    """Generate price, portfolio, and hedge output files from one setup."""
 
     prefix = Path(output_prefix)
     price_path = prefix.with_name(f"{prefix.name}_price_output.json")
